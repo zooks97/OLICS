@@ -1,2 +1,2 @@
 # OLICS
-Generate Optimal Linear Independent Coupling Strains for first principles elastic constants calculations
+Generate Optimal Linear Independent Coupling Strains for elastic constants calculations
