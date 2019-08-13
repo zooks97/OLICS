@@ -1,7 +1,27 @@
+import time
+
 from multiprocessing import Pool
 
 import numpy as np
 import scipy.optimize as spopt
+from pathos.multiprocessing import ProcessingPool
+
+from elastic_symmetries import *
+
+LAUE_NAMES = {
+    'CI': 'Cubic I',
+    'CII': 'Cubic II',
+    'HI': 'Hexagonal I',
+    'HII': 'Hexagonal II',
+    'RI': 'Rhombohedral I',
+    'RII': 'Rhombohedral II',
+    'TI': 'Tetragonal I',
+    'TII': 'Tetragonal II',
+    'O': 'Orthorhombic',
+    'Mb': 'Monoclinic Diad||x3',
+    'Mc': 'Monoclinic Diad||x2',
+    'N': 'Triclinic'
+}
 
 def get_laue_name(laue: str) -> str:
     """
@@ -9,21 +29,7 @@ def get_laue_name(laue: str) -> str:
     :param laue: Laue group symbol
     :returns: long name for Laue group
     """
-    laue_names = {
-        'CI': 'Cubic I',
-        'CII': 'Cubic II',
-        'HI': 'Hexagonal I',
-        'HII': 'Hexagonal II',
-        'RI': 'Rhombohedral I',
-        'RII': 'Rhombohedral II',
-        'TI': 'Tetragonal I',
-        'TII': 'Tetragonal II',
-        'O': 'Orthorhombic',
-        'Mb': 'Monoclinic Diad||x3',
-        'Mc': 'Monoclinic Diad||x2',
-        'N': 'Triclinic'
-    }
-    return laue_names[laue]
+    return LAUE_NAMES[laue]
 
 
 def get_ulics(laue: str) -> np.array:
@@ -77,7 +83,10 @@ def get_ulics(laue: str) -> np.array:
                        ulics[5]]),
     }
     
-    return ulics[laue]
+    return ulics[laue] 
+
+
+ULICS = {laue: get_ulics(laue) for laue in LAUE_NAMES.keys()}
 
 
 def get_min_num_strains(laue: str) -> int:
@@ -330,8 +339,8 @@ def optimize_locally(x0: np.ndarray, symm_mat: np.ndarray, num_strains: int, num
 def optimize_basin_hopping(x0: np.ndarray, symm_mat: np.ndarray, num_strains: int, num_dims: int=6,
                            cij_guess=None, optimality: str='D', method: str='COBYLA',
                            tol: float=0.01, num_itermax: int=1000000, stepsize: float=0.2,
-                           temp: float=20.0, ortho: bool=False, verbose: bool=False) -> np.nd_array:
-    def take_normalized_step(x: np.ndarray, dims: int, self) -> np.nd_array:
+                           temp: float=20.0, ortho: bool=False, verbose: bool=False) -> np.ndarray:
+    def take_normalized_step(x, dims=num_dims, stepsize=stepsize):
         """
         We might be concerned with taking steps that are not isotropic if we
             rescale.
@@ -341,15 +350,15 @@ def optimize_basin_hopping(x0: np.ndarray, symm_mat: np.ndarray, num_strains: in
         """
         x0 = x.copy()
 
-        newx = x0 + (np.random.rand(len(x0)) - 0.5) * self.stepsize
+        newx = x0 + (np.random.rand(len(x0)) - 0.5) * stepsize
 
-        D_strains = newx.reshape(len(x) / dims, dims)
+        D_strains = newx.reshape(int(len(x) / dims), dims)
         for n, strain in enumerate(D_strains):
             D_strains[n] /= np.linalg.norm(strain)
 
         return D_strains.reshape(len(x))
 
-    def take_normalized_step_ortho(x: np.nd_array, dims: int, self) -> np.ndarray:
+    def take_normalized_step_ortho(x, dims=num_dims, stepsize=stepsize):
         """
         We might be concerned with taking steps that are not isotropic if we
             rescale.
@@ -359,9 +368,9 @@ def optimize_basin_hopping(x0: np.ndarray, symm_mat: np.ndarray, num_strains: in
         """
         x0 = x.copy()
 
-        newx = x0 + (np.random.rand(len(x0)) - 0.5) * self.stepsize
+        newx = x0 + (np.random.rand(len(x0)) - 0.5) * stepsize
 
-        D_strains = newx.reshape(len(x) / dims, dims)
+        D_strains = newx.reshape(int(len(x) / dims), dims)
         for n, strain in enumerate(D_strains):
             D_strains[n] /= np.linalg.norm(strain)
 
@@ -373,13 +382,6 @@ def optimize_basin_hopping(x0: np.ndarray, symm_mat: np.ndarray, num_strains: in
         x0[n] /= np.linalg.norm(strain)
 
     x0 = x0.reshape(num_strains * num_dims)
-
-    take_normalized_step.func_defaults = (x0, num_dims, take_normalized_step)
-    take_normalized_step.stepsize = stepsize
-
-    take_normalized_step_ortho.func_defaults = (x0, num_dims,
-        take_normalized_step_ortho)
-    take_normalized_step_ortho.stepsize = stepsize
 
     constraints = []
     for strain_n in range(num_strains):
@@ -420,10 +422,201 @@ def optimize_basin_hopping(x0: np.ndarray, symm_mat: np.ndarray, num_strains: in
     return D_strains.reshape(num_strains * num_dims)
 
 
-def calc_cost(symmetry_matrix, num_strains, num_dims=6, optimality='D'):
-    return lambda x0: doe_cost(x0, symmetry_matrix, num_strains, num_dims, optimality)
+def calc_cost(symm_mat: np.ndarray, num_strains: int,
+              num_dims: int=6, optimality: str='D'):
+    """
+    Generate a lambda cost function for a given symmetry, number of strains,
+        number of dimensions, and type of optimality (D, A, E)
+    :param symm_mat: list of elastic symmetry matrices
+    :param num_strains: number of strain directions to optimize over
+    :param num_dims: number of dimensions being considered (6 for the 3-D crystal case)
+    :param optimality: type of design of experiments optimality
+        D for determinate optimization
+        A for ...
+        E for eigenvalue optimization
+    """
+    return lambda x0: doe_cost(x0, symm_mat, num_strains, num_dims, optimality)
 
 
-def basin_hopping(symmetry_matrix, num_strains, num_dims=6, cij_guess=None, optimality='D', method='SLSQP', tol=0.01,
-                  num_itermax=1000, step_size=0.2, temp=10, orthogonal=True):
-    return optimize_basin_hopping(x0, symmetry_matrix, num_strains, num_dims, cij_guess, optimality, method, tol, num_itermax, step_size, temp, orthogonal)
+def basin_hopping(symm_mat: np.ndarray, num_strains: int, num_dims: int=6,
+                  elastic_tensor_guess=None, optimality: str='D', method: str='SLSQP',
+                  tol: float=0.01, num_itermax: int=1000, step_size: float=0.2,
+                  temp: int=10, orthogonal: bool=True):
+    """
+    Generate a lambda basin hopping function for a given system
+    :param symm_matrix: list of elastic symmetry matrices
+    :param num_strains: number of strain directions to optimize over
+    :param num_dims: number of dimensions being considered (6 for the 3-D crystal case)
+    :param elastic_tensor_guess: approximate elastic tensor matrix for doing relative value optimization
+    :param optimality: type of design of experiments optimality
+        D for determinate optimization
+        A for ...
+        E for eigenvalue optimization
+    :param method: scipy minimization algorithm
+    :param tol: scipy minimization tolerance
+    :param num_itermax: scipy maximum number of iterations
+    :param step_size: basin hopping step size
+    :param temp: basin hopping temperature
+    :param orthogonal: whether to take orthogonal steps during basin hopping
+    """
+    return lambda x0: optimize_basin_hopping(x0, symm_mat, num_strains, num_dims,
+                                             elastic_tensor_guess, optimality, method,
+                                             tol, num_itermax, step_size, temp, orthogonal)
+
+
+def generate_olics(laue, num_dims: int=6, elastic_tensor_guess=None,
+                   optimality: str='D', method: str='SLSQP', 
+                   num_itermax: int=1_000, random_tests: int=1_000,
+                   basin_tests: int=3, step_size: float=0.1, tol: float=0.001,
+                   ortho: bool=True, additional_strains: int=0,
+                   auto_temp: bool=True, temp: float=10.0, max_workers: int=4,
+                   verbose=True):
+    t0 = time.time()
+    symm_mat = get_elastic_symmetries(laue)
+    num_strains = get_min_num_strains(laue) + additional_strains
+    cost_function = calc_cost(symm_mat, num_strains, num_dims, optimality)
+    
+    random_strains = []
+    random_strains_ortho = []
+    
+    if verbose:
+        print('Running {} ({} strains)'.format(laue, num_strains))
+    
+    if verbose:
+        print('Generating strains ...', end=' ')
+        
+    for i in range(random_tests * num_strains):
+        # generate random strains
+        x0 = np.random.rand(num_strains, num_dims)
+        
+        # normalize each strain
+        for n, strain in enumerate(x0):
+            x0[n] /= np.linalg.norm(strain)
+        
+        # orthogonalize the strains
+        x0_ortho = gram_schmidt_rows(x0)
+        
+        # reduce the dimension of the strain array
+        # each strain is now a row instead of a vector
+#         x0 = x0.reshape(num_strains * num_dims)
+        x0_o = x0_ortho.reshape(num_strains * num_dims)
+        
+#         random_strains.append(x0)
+        random_strains_ortho.append(x0_ortho)
+        
+    # reshape the generated strains
+#     basin_strains = random_strains[:basin_tests*num_strains]
+    basin_strains_ortho = random_strains_ortho[:basin_tests*num_strains]
+    
+    if verbose:
+        print('Done')
+        print('Initializing multiprocessing ...', end=' ')
+        
+    # initialize a multiprocessing pool
+    try:
+        tp = ProcessingPool(max_workers=max_workers)
+    except:
+        tp.restart()
+        
+    if verbose:
+        print('Done')
+        print('Calculating costs ...', end=' ')
+        
+    # calculate costs for random and random orthonormalized strain sets    
+#     try:
+#         random_costs = tp.map(cost_function, random_strains)
+#     except Exception as e:
+#         print(e)
+#         tp.restart()
+#         random_costs = tp.map(cost_function, random_strains)
+    
+    try:
+        random_costs_ortho = tp.map(cost_function, random_strains_ortho)
+    except Exception as e:
+        print(e)
+        tp.restart()
+        random_costs_ortho = tp.map(cost_function, random_strains_ortho)
+    
+    if verbose:
+        print('Done')
+        print('Running basin hopping optimization ...', end=' ')
+    
+    # set basin hopping temperature
+    if auto_temp == True:
+        temp = np.percentile(random_costs_ortho - min(random_costs_ortho), 5)
+    else:
+        temp = 10.0
+        
+    # do basin-hopping optimization for random and orthonormalized strains    
+#     basin_result = basin_hopping(symm_mat=symm_mat,
+#                                  num_strains=num_strains, num_dims=num_dims,
+#                                  elastic_tensor_guess=None,
+#                                  optimality=optimality, method=method, tol=tol,
+#                                  num_itermax=num_itermax, step_size=step_size,
+#                                  temp=temp, orthogonal=False)
+
+    basin_result_ortho = basin_hopping(symm_mat=symm_mat,
+                                 num_strains=num_strains, num_dims=num_dims,
+                                 elastic_tensor_guess=None,
+                                 optimality=optimality, method=method, tol=tol,
+                                 num_itermax=num_itermax, step_size=step_size,
+                                 temp=temp, orthogonal=True)
+
+    # retrieve results from the basin hopping optimizations
+#     try:
+#         optimized_strains = tp.map(basin_result, basin_strains)
+#     except Exception as e:
+#         print(e)
+#         tp.restart()
+#         optimized_strains = tp.map(basin_result, basin_strains)
+        
+    try:
+        optimized_strains_ortho = tp.map(basin_result_ortho, basin_strains_ortho)
+    except Exception as e:
+        print(e)
+        tp.restart()
+        optimized_strains_ortho = tp.map(basin_result_ortho, basin_strains_ortho)
+         
+    if verbose:
+        print('Done')
+        print('Calculating costs for basin hopping results ...', end=' ')
+            
+    # calculate costs for the basin hopping results
+#     try:
+#         optimized_costs  = tp.map(cost_function, basin_strains)
+#     except Exception as e:
+#         print(e)
+#         tp.restart()
+#         optimized_costs = tp.map(basin_result_ortho, basin_strains)
+        
+    try:
+        optimized_costs_ortho = tp.map(cost_function, basin_strains_ortho)
+    except Exception as e:
+        print(e)
+        tp.restart()
+        optimized_costs_ortho = tp.map(cost_function, basin_strains_ortho)
+        
+    if verbose:
+        print('Done')
+        print('Preparing outputs ...', end=' ')
+        
+    # reshape the result strains
+#     optimized_strains = [ihh.reshape(num_strains, num_dims).tolist() for ihh in optimized_strains]
+    optimized_strains_ortho = [ihh.reshape(num_strains, num_dims).tolist() for ihh in optimized_strains_ortho]
+    
+    # return the results for further processing (the top 4 results are saved)
+    opt_results = {
+#         'D-OLICS (BH)': optimized_strains,
+#         'errors': optimized_costs,
+        'D-OLICS (OBH)': optimized_strains_ortho,
+        'errors_ortho': optimized_costs_ortho
+    }
+    
+    result_strains_ortho = opt_results['D-OLICS (OBH)'][np.argmin(opt_results['errors_ortho'])]
+    result_cost_ortho = min(opt_results['errors_ortho'])
+    
+    if verbose:
+        print('Done')
+    
+    return {'OLICS ({})'.format(laue): result_strains_ortho,
+            'COST ({})'.format(laue): result_cost_ortho}

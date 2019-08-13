@@ -10,8 +10,6 @@ def voigt_index_to_matrix_index(voigt_index: str) -> tuple:
     :param string: voigt index string (e.g. "11" for the first entry)
     :returns: equivalent matrix index (e.g. (0,0) for the first entry)
     """
-    # TODO: implement some sanity checking assertions
-    # only integers, within appropriate range, no zeros, etc.
     matrix_index = tuple([int(idx) - 1 for idx in voigt_index])
     return matrix_index
 
@@ -33,7 +31,7 @@ def voigt_indices_to_matrix(voigt_indices: list) -> np.ndarray:
 
 
 def get_elastic_symmetries(laue_group: str,
-                           df: pd.core.frame.DataFrame=pd.read_csv('./elastic_paper_table.csv', dtype=str)) -> np.ndarray:
+                           df: pd.core.frame.DataFrame=pd.read_csv('../data/elastic_paper_table.csv', dtype=str)) -> np.ndarray:
     """
     Create elastic symmetry arrays based on a vector definition of the independent components
         of an elastic tensor and their prefactors
