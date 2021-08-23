@@ -33,12 +33,12 @@ def get_ulics(laue: str) -> np.ndarray:
     :param laue: Laue group symbol
     :returns: ULICS array
     """
-    ulics = [np.array([1, 2, 3, 4, 5, 6]),
-             np.array([-2, 1, 4, -3, 6, -5]),
-             np.array([3, -5, -1, 6, 2, -4]),
-             np.array([-4, -6, 5, 1, -3, 2]),
-             np.array([5, 4, 6, -2, -1, -3]),
-             np.array([-6, 3, -2, 5, -4, 1])]
+    ulics = [np.array([ 1,  2,  3,  4,  5,  6]),
+             np.array([-2,  1,  4, -3,  6, -5]),
+             np.array([ 3, -5, -1,  6,  2, -4]),
+             np.array([-4, -6,  5,  1, -3,  2]),
+             np.array([ 5,  4,  6, -2, -1, -3]),
+             np.array([-6,  3, -2,  5, -4,  1])]
 
     ulics = [n / np.linalg.norm(n) for n in ulics]
 
@@ -125,7 +125,7 @@ def voigt_indices_to_matrix(voigt_indices: list) -> np.ndarray:
 
 def get_elastic_symmetries(laue_group: str,
                            df: pd.core.frame.DataFrame=pd.read_csv(
-                               './data/elastic_paper_table.csv', dtype=str)) -> np.ndarray:
+                               '../data/elastic_paper_table.csv', dtype=str)) -> np.ndarray:
     """
     Create elastic symmetry arrays based on a vector definition of the independent components
         of an elastic tensor and their prefactors
